@@ -39,10 +39,10 @@ async function decodeAudioData(
 }
 
 export interface MedicalAnalysisResult {
-  riskScore: number;
-  riskLevel: 'CRITICAL' | 'HIGH' | 'MODERATE' | 'LOW';
-  vitals: { [key: string]: string };
-  summary: string;
+  riskScore?: number | null;
+  riskLevel?: 'CRITICAL' | 'HIGH' | 'MODERATE' | 'LOW' | null;
+  vitals: { [key: string]: string | null };
+  summary?: string | null;
   keyFindings: string[];
   medications?: { name: string; dosage: string; duration: string }[];
 }
@@ -117,31 +117,58 @@ export class GeminiService {
     return this.activeChat;
   }
 
+    private sleep(ms: number) {
+      return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    private isRateLimitError(err: any) {
+      if (!err) return false;
+      const msg = (err.message || err.toString || '').toString();
+      return err.status === 429 || msg.includes('429') || msg.toLowerCase().includes('rate limit');
+    }
+
+    private async withRetry<T>(fn: () => Promise<T>, retries = 3, baseDelay = 500): Promise<T> {
+      let attempt = 0;
+      while (true) {
+        try {
+          return await fn();
+        } catch (err: any) {
+          attempt++;
+          if (attempt > retries || !this.isRateLimitError(err)) throw err;
+          const jitter = Math.floor(Math.random() * 200);
+          const delay = baseDelay * Math.pow(2, attempt) + jitter;
+          console.warn(`Gemini rate-limited. Backing off ${delay}ms (attempt ${attempt}/${retries})`);
+          await this.sleep(delay);
+        }
+      }
+    }
+
   /**
    * New Validated Method for DoctorDashboard v2
    */
   public async analyzeMedicalReport(base64Data: string, mimeType: string): Promise<MedicalAnalysisResult> {
     try {
-      const ai = this.getClient();
-      // Check for valid key before making call
       const apiKey = this.getApiKey();
+
+      // MOCK FALLBACK: Use simulation if no key or key is placeholder
       if (!apiKey || apiKey.startsWith("YOUR_")) {
         console.warn("Using MOCK ANALYSIS due to missing API Key");
         await new Promise(r => setTimeout(r, 2000)); // Simulate delay
         return {
-          riskScore: 85,
-          riskLevel: 'HIGH',
+          riskScore: null,
+          riskLevel: null,
           vitals: {
-            "Blood Pressure": "145/90",
-            "Heart Rate": "98 bpm",
-            "Temperature": "98.6°F",
-            "Weight": "72 kg"
+            "Blood Pressure": null,
+            "Heart Rate": null,
+            "Temperature": null,
+            "Weight": null
           },
-          summary: "Patient shows signs of elevated hypertension and stress markers. Immediate clinical intervention is recommended.",
-          keyFindings: ["Elevated BP indicating Stage 2 Hypertension", "Tachycardia present at rest", "Normal body temperature"]
+          summary: null,
+          keyFindings: []
         };
       }
 
+      const ai = this.getClient();
       const prompt = `
             Analyze this medical document and extract a clinical risk assessment.
             Return ONLY valid JSON matching this structure:
@@ -162,21 +189,41 @@ export class GeminiService {
             }
           `;
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.0-flash-exp',
-        contents: [{
-          role: 'user',
-          parts: [
-            { text: prompt },
-            { inlineData: { data: base64Data, mimeType: mimeType } }
-          ]
-        }],
-        config: { responseMimeType: 'application/json' }
-      });
+      // Prefer the chat API which tends to be more stable across versions and
+      // avoids model-specific generateContent compatibility issues.
+      const chat = this.getChatSession();
+      let jsonText = '';
 
-      const jsonText = response.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!jsonText) throw new Error("Empty AI Response");
+      try {
+        const payload = base64Data ? `\n\n[INLINE_DATA:${mimeType}]\n${base64Data}\n[END_INLINE_DATA]` : '';
+        const resp = await this.withRetry(() => chat.sendMessage({ message: prompt + payload }));
+        jsonText = resp.text || '';
+      } catch (chatErr) {
+        console.warn('Chat API attempt failed, falling back to generateContent:', chatErr);
+      }
 
+      if (!jsonText) {
+        try {
+          const response = await this.withRetry(() => ai.models.generateContent({
+            model: 'gemini-2.0-flash-exp',
+            contents: [{
+              role: 'user',
+              parts: [
+                { text: prompt },
+                { inlineData: { data: base64Data, mimeType: mimeType } }
+              ]
+            }],
+            config: { responseMimeType: 'application/json' }
+          }));
+
+          jsonText = response.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        } catch (genErr) {
+          console.error('generateContent fallback failed:', genErr);
+          throw genErr;
+        }
+      }
+
+      if (!jsonText) throw new Error('Empty AI Response');
       return JSON.parse(jsonText.replace(/```json/g, '').replace(/```/g, '').trim()) as MedicalAnalysisResult;
 
     } catch (error: any) {
@@ -186,15 +233,127 @@ export class GeminiService {
         riskScore: 72,
         riskLevel: 'MODERATE',
         vitals: {
-          "Blood Pressure": "130/85",
-          "Heart Rate": "88 bpm",
-          "Temperature": "99.1°F",
-          "Weight": "Unknown"
+          "Blood Pressure": null,
+          "Heart Rate": null,
+          "Temperature": null,
+          "Weight": null
         },
         summary: "Analysis interrupted/simulated. Patient data suggests moderate inflammatory response.",
         keyFindings: ["Moderate hypertension", "Elevated heart rate", "Incomplete data set"]
       };
     }
+  }
+
+  private decodeBase64ToText(base64: string): string {
+    try {
+      // Handles UTF-8 text encoded to base64
+      const binary = atob(base64);
+      try {
+        return decodeURIComponent(escape(binary));
+      } catch (e) {
+        return binary;
+      }
+    } catch (e) {
+      return '';
+    }
+  }
+
+  private validateExtraction(parsed: any, sourceText: string) {
+    if (!sourceText || !sourceText.trim()) {
+      // If we couldn't extract any source text (e.g., image PDF/OCR failure),
+      // avoid accepting model-generated claims — clear sensitive fields.
+      const safe: any = { ...parsed };
+      if (safe.vitals) {
+        for (const k of Object.keys(safe.vitals)) safe.vitals[k] = null;
+      }
+      safe.age = null;
+      safe.summary = null;
+      safe.keyFindings = [];
+      return safe;
+    }
+    const src = sourceText.toLowerCase();
+    const checkPresent = (val?: string | null) => {
+      if (!val) return false;
+      const s = String(val).toLowerCase();
+      // check direct substring or numeric substring
+      return src.includes(s) || (s.replace(/[^0-9.\/]/g, '') && src.includes(s.replace(/[^0-9.\/]/g, '')));
+    };
+
+    // Validate vitals
+    if (parsed.vitals) {
+      for (const k of Object.keys(parsed.vitals)) {
+        if (!checkPresent(parsed.vitals[k])) {
+          parsed.vitals[k] = null;
+        }
+      }
+    }
+
+    // If vitals are missing, attempt to extract common vitals via regex
+    try {
+      const extracted = this.extractVitalsFromText(sourceText);
+      if (extracted) {
+        for (const key of Object.keys(extracted)) {
+          // Only fill if model didn't provide a valid value
+          if (parsed.vitals && !parsed.vitals[key] && extracted[key]) {
+            parsed.vitals[key] = extracted[key];
+          }
+        }
+      }
+    } catch (e) {
+      // non-fatal
+    }
+
+    // Validate age if present
+    if (parsed.age && !checkPresent(String(parsed.age))) {
+      parsed.age = null;
+    }
+
+    // Validate diagnosis/keyFindings: ensure at least one finding term present in source
+    if (parsed.keyFindings && parsed.keyFindings.length) {
+      const validated: string[] = [];
+      for (const f of parsed.keyFindings) {
+        if (checkPresent(f)) validated.push(f);
+      }
+      parsed.keyFindings = validated;
+    }
+
+    // If summary isn't present in source, drop it to avoid fabricated claims
+    if (parsed.summary && !checkPresent(parsed.summary.slice(0, 50))) {
+      parsed.summary = null;
+    }
+
+    return parsed;
+  }
+
+  private extractVitalsFromText(text: string) {
+    if (!text) return null;
+    const src = text;
+    const result: { [k: string]: string | null } = {
+      'Blood Pressure': null,
+      'Heart Rate': null,
+      'Temperature': null,
+      'Weight': null,
+    };
+
+    // Blood pressure patterns like 120/80 mmHg or BP: 120/80
+    const bpMatch = src.match(/(\b(?:blood pressure|bp)[:\s]*|)(\d{2,3}\/\d{2,3})(?:\s*mmhg)?/i) || src.match(/(\d{2,3}\/\d{2,3})\s*mmhg/i);
+    if (bpMatch) result['Blood Pressure'] = bpMatch[2] || bpMatch[1];
+
+    // Heart rate / pulse patterns like 80 bpm or Pulse Rate: 80
+    const hrMatch = src.match(/(?:\b(?:heart rate|pulse rate|pulse|hr)[:\s]*)(\d{2,3})(?:\s*bpm)?/i) || src.match(/(\d{2,3})\s*bpm/i);
+    if (hrMatch) result['Heart Rate'] = hrMatch[1];
+
+    // Temperature patterns like 37.5 C or 99°F
+    const tempMatch = src.match(/(?:\b(?:temperature|temp|t)[:\s]*)(\d{2,3}(?:\.\d)?)(?:\s*[°º]?\s*([CF]))?/i) || src.match(/(\d{2,3}(?:\.\d)?)\s*°?\s*F/i) || src.match(/(\d{2,3}(?:\.\d)?)\s*°?\s*C/i);
+    if (tempMatch) {
+      result['Temperature'] = tempMatch[1] + (tempMatch[2] ? ' ' + tempMatch[2] : '');
+    }
+
+    // Weight patterns like 59 kg or Weight: 130 lbs
+    const weightMatch = src.match(/(?:\b(?:weight|wt)[:\s]*)(\d{2,3}(?:\.\d)?)(?:\s*(kg|kgs|lbs|lb))?/i) || src.match(/(\d{2,3}(?:\.\d)?)\s*(kg|lbs)/i);
+    if (weightMatch) result['Weight'] = weightMatch[1] + (weightMatch[2] ? ' ' + weightMatch[2] : '');
+
+    return result;
   }
 
   // Legacy Method (kept for backward compatibility if needed, or remove if unused)
@@ -229,7 +388,7 @@ export class GeminiService {
       }
 
       const chat = this.getChatSession();
-      const response = await chat.sendMessage({ message: prompt });
+      const response = await this.withRetry(() => chat.sendMessage({ message: prompt }));
       return response.text || "Diagnostic failure. Connection to central server lost.";
     } catch (error) {
       console.error("Gemini Chat Error:", error);

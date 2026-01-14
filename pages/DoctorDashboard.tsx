@@ -31,6 +31,14 @@ const DoctorDashboard: React.FC<{ activePage: string; user: User; onUserUpdate: 
     const [isEditingProfile, setIsEditingProfile] = useState(false);
     const [editForm, setEditForm] = useState<User>(user);
 
+    const normalizeVital = (v: unknown) => {
+        if (v === null || v === undefined) return 'Unknown';
+        if (typeof v === 'object') return 'Unknown';
+        const s = String(v).trim().toLowerCase();
+        if (s === 'not detected' || s === 'n/a' || s === 'none' || s === 'unknown' || s === '') return 'Unknown';
+        return String(v);
+    };
+
     const fileInputRef = useRef<HTMLInputElement>(null);
     const avatarInputRef = useRef<HTMLInputElement>(null);
 
@@ -106,15 +114,17 @@ const DoctorDashboard: React.FC<{ activePage: string; user: User; onUserUpdate: 
                 };
                 setBills(oldBills => [newBill, ...oldBills]);
 
+                // reuse top-level normalizeVital to coerce numbers/nulls safely
+
                 const newRecord: Omit<MedicalRecord, 'id'> = {
                     patientId: targetApp.patientId,
                     date: new Date().toISOString().split('T')[0],
                     diagnosis: "Clinical Assessment", // Default title
                     doctorName: user.name,
                     vitals: {
-                        bp: scanResult.vitals["Blood Pressure"] || "N/A",
-                        temp: scanResult.vitals["Temperature"] || "N/A",
-                        weight: scanResult.vitals["Weight"] || "N/A"
+                        bp: normalizeVital(scanResult.vitals["Blood Pressure"]),
+                        temp: normalizeVital(scanResult.vitals["Temperature"]),
+                        weight: normalizeVital(scanResult.vitals["Weight"])
                     },
                     treatmentSummary: scanResult.summary,
                     medications: scanResult.medications || [],
@@ -398,13 +408,13 @@ const DoctorDashboard: React.FC<{ activePage: string; user: User; onUserUpdate: 
                                         strokeWidth="12"
                                         fill="none"
                                         strokeDasharray="553"
-                                        strokeDashoffset={553 - (553 * scanResult.riskScore / 100)}
+                                        strokeDashoffset={553 - (553 * (scanResult.riskScore ?? 0) / 100)}
                                         strokeLinecap="round"
                                         style={{ transition: 'all 2s ease-out' }}
                                     />
                                 </svg>
                                 <div className="absolute inset-0 flex flex-col items-center justify-center">
-                                    <span className="text-5xl font-black text-white tracking-tighter">{scanResult.riskScore}</span>
+                                    <span className="text-5xl font-black text-white tracking-tighter">{scanResult.riskScore ?? '—'}</span>
                                     <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 mt-1">Risk Index</span>
                                 </div>
                             </div>
@@ -415,7 +425,7 @@ const DoctorDashboard: React.FC<{ activePage: string; user: User; onUserUpdate: 
                             {Object.entries(scanResult.vitals).map(([key, value], i) => (
                                 <div key={key} className="bg-slate-900/50 p-8 rounded-[32px] border border-white/5 hover:border-[#22d3ee]/30 transition-all hover:-translate-y-1">
                                     <p className="text-[10px] font-black uppercase text-slate-400 tracking-widest mb-2">{key.replace(/([A-Z])/g, ' $1').trim()}</p>
-                                    <p className="text-2xl md:text-3xl font-black text-white tracking-tight">{value}</p>
+                                    <p className="text-2xl md:text-3xl font-black text-white tracking-tight">{normalizeVital(value)}</p>
                                 </div>
                             ))}
                             <div className="col-span-2 bg-slate-900/50 p-8 rounded-[32px] border border-white/5">
