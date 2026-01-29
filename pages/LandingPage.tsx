@@ -124,9 +124,9 @@ const LandingPage: React.FC<LandingPageProps> = ({
                 Sponsored Partner
               </div>
               <img
-                src="/sjec_direct.jpg"
+                src="https://sjec.ac.in/storage/files/Project%20Pics/page-builder/about-section-college.jpg"
                 alt="St Joseph Engineering College - Mangalore"
-                className="w-full aspect-[9/4] object-cover object-top"
+                className="w-full aspect-[9/4] object-cover object-top" 
               />
               <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-slate-900/90 via-slate-900/40 to-transparent p-8 pt-32 flex justify-between items-end opacity-0 group-hover:opacity-100 transition-opacity duration-300">
                 <div>
@@ -156,7 +156,7 @@ const LandingPage: React.FC<LandingPageProps> = ({
             </div>
 
             <div className="w-full md:w-80 space-y-3">
-              <div className="flex justify-between items-center text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">
+             <div className="flex justify-between items-center text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">
                 <span>Network Status:</span>
                 <span className="text-sky-500">Optimized</span>
               </div>
@@ -210,7 +210,7 @@ const LandingPage: React.FC<LandingPageProps> = ({
                       Sponsored Partner
                     </div>
                     <img
-                      src="/sjec_direct.jpg"
+                      src="https://sjec.ac.in/storage/files/Project%20Pics/page-builder/about-section-college.jpg"
                       alt="St Joseph Engineering College - Mangalore"
                       className="w-full aspect-[9/4] object-cover object-top"
                     />

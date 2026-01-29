@@ -228,18 +228,19 @@ export class GeminiService {
 
     } catch (error: any) {
       console.error("Gemini Analysis Error:", error);
-      // Fallback to mock data on error so the UI doesn't break for the user
+      // On error, return empty/nullable analysis (do NOT fabricate clinical values)
       return {
-        riskScore: 72,
-        riskLevel: 'MODERATE',
+        riskScore: null,
+        riskLevel: null,
         vitals: {
           "Blood Pressure": null,
           "Heart Rate": null,
           "Temperature": null,
           "Weight": null
         },
-        summary: "Analysis interrupted/simulated. Patient data suggests moderate inflammatory response.",
-        keyFindings: ["Moderate hypertension", "Elevated heart rate", "Incomplete data set"]
+        summary: null,
+        keyFindings: [],
+        medications: []
       };
     }
   }
